@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, type PaginationMeta } from "@/lib/api-client";
 import { useWalletStore } from "@/stores/wallet";
 import {
   Card,
@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Pagination } from "@/components/ui/pagination";
 import {
   ArrowUpRight,
   ArrowDownRight,
@@ -39,6 +40,15 @@ const categoryIcons = {
   default: Receipt,
 };
 
+const TRANSACTIONS_PAGE_LIMIT = 10;
+
+const DEFAULT_PAGINATION_META: PaginationMeta = {
+  page: 1,
+  limit: TRANSACTIONS_PAGE_LIMIT,
+  total: 0,
+  totalPages: 1,
+};
+
 export const formatDate = (dateString: string) => {
   return new Date(dateString).toLocaleDateString("en-US", {
     year: "numeric",
@@ -53,13 +63,26 @@ export default function Transactions() {
   const [selectedCategory, setSelectedCategory] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [paginationMeta, setPaginationMeta] = useState<PaginationMeta>(
+    DEFAULT_PAGINATION_META,
+  );
 
   useEffect(() => {
+    let isCurrent = true;
+
     const loadTransactions = async () => {
       setIsLoading(true);
       setError("");
 
-      const response = await apiClient.getMyTransactions();
+      const response = await apiClient.getMyTransactions({
+        page: currentPage,
+        limit: TRANSACTIONS_PAGE_LIMIT,
+      });
+
+      if (!isCurrent) {
+        return;
+      }
 
       if (!response.success) {
         setError(response.error || "Unable to load transactions");
@@ -68,11 +91,16 @@ export default function Transactions() {
       }
 
       setTransactions(response.data?.transactions ?? []);
+      setPaginationMeta(response.data?.meta ?? DEFAULT_PAGINATION_META);
       setIsLoading(false);
     };
 
     void loadTransactions();
-  }, [setTransactions]);
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [currentPage, setTransactions]);
 
   const categories = Array.from(new Set(transactions.map((t) => t.category)));
 
@@ -86,6 +114,7 @@ export default function Transactions() {
       !selectedCategory || transaction.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
+  const hasTransactions = paginationMeta.total > 0 || transactions.length > 0;
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-NG", {
@@ -105,7 +134,7 @@ export default function Transactions() {
         </p>
       </div>
 
-      {!isLoading && !error && transactions.length > 0 && (
+      {!isLoading && !error && hasTransactions && (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <Card>
             <CardContent className="pt-6">
@@ -118,7 +147,7 @@ export default function Transactions() {
                       .reduce((sum, t) => sum + t.amount, 0),
                   )}
                 </div>
-                <p className="mt-1 text-sm text-gray-500">Total Credits</p>
+                <p className="mt-1 text-sm text-gray-500">Page Credits</p>
               </div>
             </CardContent>
           </Card>
@@ -134,7 +163,7 @@ export default function Transactions() {
                       .reduce((sum, t) => sum + t.amount, 0),
                   )}
                 </div>
-                <p className="mt-1 text-sm text-gray-500">Total Debits</p>
+                <p className="mt-1 text-sm text-gray-500">Page Debits</p>
               </div>
             </CardContent>
           </Card>
@@ -143,7 +172,7 @@ export default function Transactions() {
             <CardContent className="pt-6">
               <div className="text-center">
                 <div className="text-2xl font-bold text-gray-900">
-                  {transactions.length}
+                  {paginationMeta.total}
                 </div>
                 <p className="mt-1 text-sm text-gray-500">
                   Total Transactions
@@ -190,8 +219,13 @@ export default function Transactions() {
         <CardHeader>
           <CardTitle>Transactions</CardTitle>
           <CardDescription>
-            {filteredTransactions.length} transaction
-            {filteredTransactions.length !== 1 ? "s" : ""} found
+            {searchTerm || selectedCategory
+              ? `${filteredTransactions.length} transaction${
+                  filteredTransactions.length !== 1 ? "s" : ""
+                } found on this page`
+              : `${paginationMeta.total} transaction${
+                  paginationMeta.total !== 1 ? "s" : ""
+                } total`}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -206,67 +240,78 @@ export default function Transactions() {
               <span>Loading transactions...</span>
             </div>
           ) : filteredTransactions.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Description</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredTransactions.map((transaction) => {
-                  const Icon =
-                    categoryIcons[
-                      transaction.category as keyof typeof categoryIcons
-                    ] || categoryIcons.default;
+            <div className="space-y-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="text-right">Amount</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredTransactions.map((transaction) => {
+                    const Icon =
+                      categoryIcons[
+                        transaction.category as keyof typeof categoryIcons
+                      ] || categoryIcons.default;
 
-                  return (
-                    <TableRow key={transaction.id}>
-                      <TableCell>
-                        <div
-                          className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                    return (
+                      <TableRow key={transaction.id}>
+                        <TableCell>
+                          <div
+                            className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                              transaction.type === "credit"
+                                ? "bg-green-100"
+                                : "bg-red-100"
+                            }`}
+                          >
+                            {transaction.type === "credit" ? (
+                              <ArrowDownRight className="h-5 w-5 text-green-600" />
+                            ) : (
+                              <ArrowUpRight className="h-5 w-5 text-red-600" />
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-medium text-gray-900">
+                          <div className="flex items-center gap-2">
+                            <Icon className="h-4 w-4 text-gray-500" />
+                            <span>{transaction.description}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-gray-500">
+                          {transaction.category}
+                        </TableCell>
+                        <TableCell className="text-gray-500">
+                          {formatDate(transaction.date)}
+                        </TableCell>
+                        <TableCell
+                          className={`text-right text-lg font-semibold ${
                             transaction.type === "credit"
-                              ? "bg-green-100"
-                              : "bg-red-100"
+                              ? "text-green-600"
+                              : "text-red-600"
                           }`}
                         >
-                          {transaction.type === "credit" ? (
-                            <ArrowDownRight className="h-5 w-5 text-green-600" />
-                          ) : (
-                            <ArrowUpRight className="h-5 w-5 text-red-600" />
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-medium text-gray-900">
-                        <div className="flex items-center gap-2">
-                          <Icon className="h-4 w-4 text-gray-500" />
-                          <span>{transaction.description}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-gray-500">
-                        {transaction.category}
-                      </TableCell>
-                      <TableCell className="text-gray-500">
-                        {formatDate(transaction.date)}
-                      </TableCell>
-                      <TableCell
-                        className={`text-right text-lg font-semibold ${
-                          transaction.type === "credit"
-                            ? "text-green-600"
-                            : "text-red-600"
-                        }`}
-                      >
-                        {transaction.type === "credit" ? "+" : "-"}
-                        {formatCurrency(transaction.amount)}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                          {transaction.type === "credit" ? "+" : "-"}
+                          {formatCurrency(transaction.amount)}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+
+              <Pagination
+                page={paginationMeta.page}
+                totalPages={paginationMeta.totalPages}
+                totalItems={paginationMeta.total}
+                pageSize={paginationMeta.limit}
+                isLoading={isLoading}
+                onPageChange={setCurrentPage}
+              />
+            </div>
           ) : (
             <div className="py-12 text-center">
               <Receipt className="mx-auto mb-4 h-16 w-16 text-gray-400" />

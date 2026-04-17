@@ -1,15 +1,15 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useRegisterMutation } from '@/hooks/useRegisterMutation'
+import { useResendVerificationEmailMutation } from '@/hooks/useResendVerificationEmailMutation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useToast } from '@/components/ui/toast'
-import { Wallet, Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Wallet, Eye, EyeOff, Loader2, MailCheck } from 'lucide-react'
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -21,11 +21,17 @@ export default function Register() {
   })
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
-  const router = useRouter()
   const { showToast } = useToast()
   const lastErrorMessage = useRef<string | null>(null)
+  const lastResendErrorMessage = useRef<string | null>(null)
 
-  const { mutate, isPending, error, isSuccess } = useRegisterMutation()
+  const { mutate, isPending, error, isSuccess, data } = useRegisterMutation()
+  const {
+    mutate: resendVerificationEmail,
+    isPending: isResendingVerificationEmail,
+    error: resendVerificationEmailError,
+    data: resendVerificationEmailData,
+  } = useResendVerificationEmailMutation()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -68,20 +74,44 @@ export default function Register() {
       return
     }
 
-    showToast('Registration successful', 'success')
+    showToast(data?.message || 'Registration successful. Check your email to verify your account.', 'success')
+  }, [data?.message, isSuccess, showToast])
 
-    const timeoutId = window.setTimeout(() => {
-      router.push('/dashboard')
-    }, 500)
+  useEffect(() => {
+    if (
+      !resendVerificationEmailError?.message ||
+      resendVerificationEmailError.message === lastResendErrorMessage.current
+    ) {
+      return
+    }
 
-    return () => window.clearTimeout(timeoutId)
-  }, [isSuccess, router, showToast])
+    lastResendErrorMessage.current = resendVerificationEmailError.message
+    showToast(resendVerificationEmailError.message, 'error')
+  }, [resendVerificationEmailError, showToast])
+
+  useEffect(() => {
+    if (!resendVerificationEmailData?.message) {
+      return
+    }
+
+    showToast(resendVerificationEmailData.message, 'success')
+  }, [resendVerificationEmailData?.message, showToast])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData(prev => ({
       ...prev,
       [e.target.name]: e.target.value
     }))
+  }
+
+  const handleResendVerificationEmail = () => {
+    if (!formData.email) {
+      showToast('Enter your email address first', 'error')
+      return
+    }
+
+    lastResendErrorMessage.current = null
+    resendVerificationEmail({ email: formData.email })
   }
 
   return (
@@ -98,7 +128,41 @@ export default function Register() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          {isSuccess ? (
+            <div className="space-y-6 text-center">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-blue-100">
+                <MailCheck className="h-8 w-8 text-blue-600" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-xl font-semibold text-gray-900">Check your email</h2>
+                <p className="text-sm text-gray-600">
+                  We sent a verification link to{' '}
+                  <span className="font-medium text-gray-900">{formData.email}</span>.
+                  Open the link to confirm your account before signing in.
+                </p>
+              </div>
+              <Button asChild className="w-full">
+                <Link href="/login">Go to Sign In</Link>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={isResendingVerificationEmail}
+                onClick={handleResendVerificationEmail}
+              >
+                {isResendingVerificationEmail ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Resending...
+                  </>
+                ) : (
+                  'Resend verification email'
+                )}
+              </Button>
+            </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name">Full Name</Label>
               <Input
@@ -205,6 +269,7 @@ export default function Register() {
               )}
             </Button>
           </form>
+          )}
 
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">

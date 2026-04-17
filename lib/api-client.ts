@@ -8,11 +8,24 @@ export interface LoginPayload {
   password: string;
 }
 
+export interface VerifyOtpPayload {
+  otp: string;
+  reference: string;
+}
+
 export interface RegisterPayload {
   email: string;
   password: string;
   name: string;
   phoneNumber: string;
+}
+
+export interface VerifyEmailPayload {
+  token: string;
+}
+
+export interface ResendVerificationEmailPayload {
+  email: string;
 }
 
 export interface AuthResponse {
@@ -26,7 +39,22 @@ export interface AuthResponse {
       phone?: string;
     };
     token?: string;
+    reference?: string;
   };
+  error?: string;
+}
+
+export interface VerifyEmailResponse {
+  success: boolean;
+  message?: string;
+  data?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ResendVerificationEmailResponse {
+  success: boolean;
+  message?: string;
+  data?: Record<string, unknown>;
   error?: string;
 }
 
@@ -77,8 +105,21 @@ export interface TransactionsResponse {
   message?: string;
   data?: {
     transactions: Transaction[];
+    meta: PaginationMeta;
   };
   error?: string;
+}
+
+export interface PaginationMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface TransactionsQuery {
+  page?: number;
+  limit?: number;
 }
 
 function getAuthHeaders(): Record<string, string> {
@@ -239,6 +280,63 @@ function extractTransactions(payload: unknown): Transaction[] {
     .filter((transaction): transaction is Transaction => transaction !== null);
 }
 
+function toPositiveInteger(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function extractPaginationMeta(
+  payload: unknown,
+  fallback: PaginationMeta,
+): PaginationMeta {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+
+  const responseData = payload as {
+    meta?: unknown;
+    data?: {
+      meta?: unknown;
+    };
+  };
+  const rawMeta =
+    responseData.meta ??
+    (responseData.data && typeof responseData.data === "object"
+      ? responseData.data.meta
+      : undefined);
+
+  if (!rawMeta || typeof rawMeta !== "object") {
+    return fallback;
+  }
+
+  const meta = rawMeta as Record<string, unknown>;
+  const page = toPositiveInteger(meta.page, fallback.page);
+  const limit = toPositiveInteger(meta.limit, fallback.limit);
+  const total = toPositiveInteger(meta.total, fallback.total);
+  const totalPages = toPositiveInteger(
+    meta.totalPages,
+    Math.max(1, Math.ceil(total / limit)),
+  );
+
+  return {
+    page,
+    limit,
+    total,
+    totalPages,
+  };
+}
+
 export const apiClient = {
   async login(payload: LoginPayload): Promise<AuthResponse> {
     try {
@@ -250,7 +348,7 @@ export const apiClient = {
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (!response.ok) {
         return {
@@ -261,6 +359,7 @@ export const apiClient = {
 
       return {
         success: true,
+        message: data?.message,
         data: data.data,
       };
     } catch (error) {
@@ -268,6 +367,39 @@ export const apiClient = {
       return {
         success: false,
         error: "An error occurred during login",
+      };
+    }
+  },
+
+  async verifyOtp(payload: VerifyOtpPayload): Promise<AuthResponse> {
+    try {
+      const response = await fetch(`${API_URL}/auth/login/verify-otp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await parseJsonResponse(response);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data?.message || "OTP verification failed",
+        };
+      }
+
+      return {
+        success: true,
+        message: data?.message,
+        data: data?.data,
+      };
+    } catch (error) {
+      console.error("Verify OTP error:", error);
+      return {
+        success: false,
+        error: "An error occurred while verifying OTP",
       };
     }
   },
@@ -293,6 +425,7 @@ export const apiClient = {
 
       return {
         success: true,
+        message: data?.message,
         data: data.data,
       };
     } catch (error) {
@@ -300,6 +433,77 @@ export const apiClient = {
       return {
         success: false,
         error: "An error occurred during registration",
+      };
+    }
+  },
+
+  async verifyEmail(payload: VerifyEmailPayload): Promise<VerifyEmailResponse> {
+    try {
+      const response = await fetch(`${API_URL}/auth/verify-email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await parseJsonResponse(response);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data?.message || "Email verification failed",
+        };
+      }
+
+      return {
+        success: true,
+        message: data?.message || "Email verified successfully",
+        data: data?.data ?? data,
+      };
+    } catch (error) {
+      console.error("Verify email error:", error);
+      return {
+        success: false,
+        error: "An error occurred while verifying your email",
+      };
+    }
+  },
+
+  async resendVerificationEmail(
+    payload: ResendVerificationEmailPayload,
+  ): Promise<ResendVerificationEmailResponse> {
+    try {
+      const response = await fetch(
+        `${API_URL}/auth/resend-verification-email`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      const data = await parseJsonResponse(response);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data?.message || "Failed to resend verification email",
+        };
+      }
+
+      return {
+        success: true,
+        message: data?.message || "Verification email sent",
+        data: data?.data ?? data,
+      };
+    } catch (error) {
+      console.error("Resend verification email error:", error);
+      return {
+        success: false,
+        error: "An error occurred while resending the verification email",
       };
     }
   },
@@ -412,15 +616,32 @@ export const apiClient = {
     }
   },
 
-  async getMyTransactions(): Promise<TransactionsResponse> {
+  async getMyTransactions(
+    query: TransactionsQuery = {},
+  ): Promise<TransactionsResponse> {
     try {
-      const response = await fetch(`${API_URL}/transactions/me`, {
-        method: "GET",
-        headers: getAuthHeaders(),
+      const page = query.page ?? 1;
+      const limit = query.limit ?? 10;
+      const searchParams = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
       });
+      const response = await fetch(
+        `${API_URL}/transactions/me?${searchParams.toString()}`,
+        {
+          method: "GET",
+          headers: getAuthHeaders(),
+        },
+      );
 
       const data = await parseJsonResponse(response);
       const transactions = extractTransactions(data);
+      const meta = extractPaginationMeta(data, {
+        page,
+        limit,
+        total: transactions.length,
+        totalPages: Math.max(1, Math.ceil(transactions.length / limit)),
+      });
 
       if (!response.ok) {
         return {
@@ -434,6 +655,7 @@ export const apiClient = {
         message: data?.message,
         data: {
           transactions,
+          meta,
         },
       };
     } catch (error) {

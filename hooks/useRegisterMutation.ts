@@ -1,10 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
-import { useAuthStore } from "@/stores/auth";
 
 export function useRegisterMutation() {
-  const { setUser } = useAuthStore();
-
   return useMutation({
     mutationFn: async ({
       email,
@@ -29,11 +26,6 @@ export function useRegisterMutation() {
       }
 
       return response;
-    },
-    onSuccess: (response) => {
-      if (response.data?.user) {
-        setUser(response.data.user, response.data.token);
-      }
     },
   });
 }

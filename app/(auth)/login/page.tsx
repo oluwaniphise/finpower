@@ -21,7 +21,7 @@ export default function Login() {
   const { showToast } = useToast()
   const lastErrorMessage = useRef<string | null>(null)
 
-  const { mutate, isPending, error, isSuccess } = useLoginMutation()
+  const { mutate, isPending, error, isSuccess, data } = useLoginMutation()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -43,14 +43,29 @@ export default function Login() {
       return
     }
 
-    showToast('Login successful', 'success')
+    if (data?.data?.reference) {
+      showToast(data.message || 'Enter the OTP sent to your email', 'success')
+
+      const timeoutId = window.setTimeout(() => {
+        router.push(`/verify-otp?reference=${encodeURIComponent(data.data.reference ?? '')}`)
+      }, 500)
+
+      return () => window.clearTimeout(timeoutId)
+    }
+
+    if (!data?.data?.user || !data?.data?.token) {
+      showToast(data?.message || 'Login completed, but no session was returned', 'error')
+      return
+    }
+
+    showToast(data?.message || 'Login successful', 'success')
 
     const timeoutId = window.setTimeout(() => {
       router.push('/dashboard')
     }, 500)
 
     return () => window.clearTimeout(timeoutId)
-  }, [isSuccess, router, showToast])
+  }, [data, isSuccess, router, showToast])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData(prev => ({
@@ -129,7 +144,7 @@ export default function Login() {
 
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
-              Don't have an account?{' '}
+              Don&apos;t have an account?{' '}
               <Link href="/register" className="text-blue-600 hover:underline font-medium">
                 Create one here
               </Link>
