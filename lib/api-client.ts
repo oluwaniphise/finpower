@@ -13,6 +13,10 @@ export interface VerifyOtpPayload {
   reference: string;
 }
 
+export interface ResendOtpPayload {
+  reference: string;
+}
+
 export interface RegisterPayload {
   email: string;
   password: string;
@@ -400,6 +404,39 @@ export const apiClient = {
       return {
         success: false,
         error: "An error occurred while verifying OTP",
+      };
+    }
+  },
+
+  async resendOtp(payload: ResendOtpPayload): Promise<AuthResponse> {
+    try {
+      const response = await fetch(`${API_URL}/auth/login/resend-otp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await parseJsonResponse(response);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: data?.message || "Failed to resend OTP",
+        };
+      }
+
+      return {
+        success: true,
+        message: data?.message,
+        data: data?.data,
+      };
+    } catch (error) {
+      console.error("Resend OTP error:", error);
+      return {
+        success: false,
+        error: "An error occurred while resending OTP",
       };
     }
   },
