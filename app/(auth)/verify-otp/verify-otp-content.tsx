@@ -19,7 +19,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 
 const OTP_LENGTH = 6;
-const RESEND_COOLDOWN_MS = 3 * 60 * 1000;
+const RESEND_COOLDOWN_MS = 1 * 60 * 1000;
 const RESEND_STORAGE_KEY_PREFIX = "verify-otp-resend-available-at:";
 
 function getCurrentTimestamp() {
@@ -77,7 +77,7 @@ export function VerifyOtpContent() {
     mutate: resendOtp,
     isPending: isResendingOtp,
   } = useResendOtpMutation();
-  const hasSession = Boolean(data?.data?.user && data?.data?.token);
+  const hasSession = Boolean(data?.data?.user);
 
   const otpValue = useMemo(() => otp.join(""), [otp]);
   const resendCooldownMs = getRemainingCooldown(reference, now);

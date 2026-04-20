@@ -43,17 +43,20 @@ export default function Login() {
       return
     }
 
+    console.log(data)
+
     if (data?.data?.reference) {
+      const reference = data.data.reference
       showToast(data.message || 'Enter the OTP sent to your email', 'success')
 
       const timeoutId = window.setTimeout(() => {
-        router.push(`/verify-otp?reference=${encodeURIComponent(data.data.reference ?? '')}`)
+        router.push(`/verify-otp?reference=${encodeURIComponent(reference)}`)
       }, 500)
 
       return () => window.clearTimeout(timeoutId)
     }
 
-    if (!data?.data?.user || !data?.data?.token) {
+    if (!data?.data?.user) {
       showToast(data?.message || 'Login completed, but no session was returned', 'error')
       return
     }

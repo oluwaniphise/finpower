@@ -8,7 +8,6 @@ export function useLoginMutation() {
   return useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
       const response = await apiClient.login({ email, password })
-      console.log(response)
 
       if (!response.success) {
         throw new Error(response.error || 'Invalid email or password')
@@ -17,8 +16,8 @@ export function useLoginMutation() {
       return response
     },
     onSuccess: (response) => {
-      if (response.data?.user && response.data?.token) {
-        setUser(response.data.user, response.data.token)
+      if (response.data?.user) {
+        setUser(response.data.user)
       }
     },
   })

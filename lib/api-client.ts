@@ -1,5 +1,7 @@
-import { useAuthStore } from "@/stores/auth";
+import axios, { type AxiosRequestConfig, type AxiosResponse } from "axios";
+
 import type { Transaction } from "@/stores/wallet";
+import type { User } from "@/stores/auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_SANDBOX_URL?.trim();
 
@@ -36,15 +38,24 @@ export interface AuthResponse {
   success: boolean;
   message?: string;
   data?: {
-    user: {
-      id: string;
-      email: string;
-      name: string;
-      phone?: string;
-    };
-    token?: string;
+    user?: User;
     reference?: string;
   };
+  error?: string;
+}
+
+export interface AuthMeResponse {
+  success: boolean;
+  message?: string;
+  data?: {
+    user: User;
+  };
+  error?: string;
+}
+
+export interface LogoutResponse {
+  success: boolean;
+  message?: string;
   error?: string;
 }
 
@@ -126,21 +137,148 @@ export interface TransactionsQuery {
   limit?: number;
 }
 
-function getAuthHeaders(): Record<string, string> {
-  const token = useAuthStore.getState().token;
+const api = axios.create({
+  baseURL: API_URL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+  validateStatus: () => true,
+  withCredentials: true,
+});
+
+function isSuccessStatus(status: number) {
+  return status >= 200 && status < 300;
+}
+
+function getResponseMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const item = payload as { message?: unknown };
+
+  return typeof item.message === "string" ? item.message : undefined;
+}
+
+function toAuthUser(payload: unknown): User | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const item = payload as Record<string, unknown>;
+  const id = item.id;
+  const email = item.email;
+
+  if (typeof id !== "string" || typeof email !== "string") {
+    return null;
+  }
+
+  const firstName = typeof item.firstName === "string" ? item.firstName : "";
+  const lastName = typeof item.lastName === "string" ? item.lastName : "";
+  const name =
+    typeof item.name === "string" && item.name.trim().length > 0
+      ? item.name
+      : `${firstName} ${lastName}`.trim() || email;
+  const phoneNumber =
+    typeof item.phoneNumber === "string"
+      ? item.phoneNumber
+      : typeof item.phone === "string"
+        ? item.phone
+        : undefined;
 
   return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    id,
+    email,
+    name,
+    firstName: firstName || undefined,
+    lastName: lastName || undefined,
+    phone: phoneNumber,
+    phoneNumber,
+    isVerified:
+      typeof item.isVerified === "boolean" ? item.isVerified : undefined,
   };
 }
 
-async function parseJsonResponse(response: Response) {
-  try {
-    return await response.json();
-  } catch {
+function extractAuthUser(payload: unknown): User | null {
+  if (!payload || typeof payload !== "object") {
     return null;
   }
+
+  const responseData = payload as {
+    data?: unknown;
+    user?: unknown;
+  };
+
+  if (responseData.data && typeof responseData.data === "object") {
+    const nestedData = responseData.data as { user?: unknown };
+    return toAuthUser(nestedData.user ?? responseData.data);
+  }
+
+  return toAuthUser(responseData.user ?? payload);
+}
+
+function toAuthResponseData(payload: unknown): AuthResponse["data"] {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const item = payload as Record<string, unknown>;
+  const user = extractAuthUser(payload) ?? undefined;
+  const reference =
+    typeof item.reference === "string" ? item.reference : undefined;
+
+  if (!user && !reference) {
+    return undefined;
+  }
+
+  return {
+    user,
+    reference,
+  };
+}
+
+let refreshSessionPromise: Promise<boolean> | null = null;
+
+async function refreshSession() {
+  if (!API_URL) {
+    return false;
+  }
+
+  if (!refreshSessionPromise) {
+    refreshSessionPromise = (async () => {
+      try {
+        const response = await api.post("/auth/refresh");
+
+        return isSuccessStatus(response.status);
+      } catch (error) {
+        console.error("Refresh session error:", error);
+        return false;
+      } finally {
+        refreshSessionPromise = null;
+      }
+    })();
+  }
+
+  return refreshSessionPromise;
+}
+
+async function requestWithAuth<T = unknown>(
+  config: AxiosRequestConfig,
+  retryOnUnauthorized = true,
+): Promise<AxiosResponse<T>> {
+  const response = await api.request<T>(config);
+
+  if (response.status !== 401 || !retryOnUnauthorized) {
+    return response;
+  }
+
+  const refreshed = await refreshSession();
+
+  if (!refreshed) {
+    return response;
+  }
+
+  return api.request<T>(config);
 }
 
 function extractBalance(payload: unknown): number | undefined {
@@ -342,29 +480,112 @@ function extractPaginationMeta(
 }
 
 export const apiClient = {
-  async login(payload: LoginPayload): Promise<AuthResponse> {
+  async logout(): Promise<LogoutResponse> {
     try {
-      const response = await fetch(`${API_URL}/auth/login`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await api.post("/auth/logout");
+      const data = response.data;
 
-      const data = await parseJsonResponse(response);
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
-          error: data.message || "Login failed",
+          error: data?.message || "Logout failed",
         };
       }
 
       return {
         success: true,
         message: data?.message,
-        data: data.data,
+      };
+    } catch (error) {
+      console.error("Logout error:", error);
+      return {
+        success: false,
+        error: "An error occurred during logout",
+      };
+    }
+  },
+
+  async getCurrentUser(): Promise<AuthMeResponse> {
+    try {
+      const response = await requestWithAuth({
+        url: "/auth/me",
+        method: "GET",
+      });
+
+      const data = response.data;
+      const user = extractAuthUser(data);
+
+      if (!isSuccessStatus(response.status)) {
+        return {
+          success: false,
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) || "Failed to fetch current user",
+        };
+      }
+
+      if (!user) {
+        return {
+          success: false,
+          error: "Current user was not returned by the server",
+        };
+      }
+
+      return {
+        success: true,
+        message: getResponseMessage(data),
+        data: { user },
+      };
+    } catch (error) {
+      console.error("Get current user error:", error);
+      return {
+        success: false,
+        error: "An error occurred while fetching the current user",
+      };
+    }
+  },
+
+  async login(payload: LoginPayload): Promise<AuthResponse> {
+    try {
+      const response = await api.post("/auth/login", payload);
+      const data = response.data;
+
+      if (!isSuccessStatus(response.status)) {
+        return {
+          success: false,
+          error: data?.message || "Login failed",
+        };
+      }
+
+      const authData = toAuthResponseData(data?.data ?? data);
+
+      if (authData?.user || authData?.reference) {
+        return {
+          success: true,
+          message: data?.message,
+          data: authData,
+        };
+      }
+
+      const currentUserResponse = await requestWithAuth({
+        url: "/auth/me",
+        method: "GET",
+      });
+      const currentUserData = currentUserResponse.data;
+      const currentUser = extractAuthUser(currentUserData);
+
+      if (!isSuccessStatus(currentUserResponse.status) || !currentUser) {
+        return {
+          success: false,
+          error: "Login succeeded, but the session could not be restored.",
+        };
+      }
+
+      return {
+        success: true,
+        message: data?.message,
+        data: { user: currentUser },
       };
     } catch (error) {
       console.error("Login error:", error);
@@ -377,17 +598,10 @@ export const apiClient = {
 
   async verifyOtp(payload: VerifyOtpPayload): Promise<AuthResponse> {
     try {
-      const response = await fetch(`${API_URL}/auth/login/verify-otp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await api.post("/auth/login/verify-otp", payload);
+      const data = response.data;
 
-      const data = await parseJsonResponse(response);
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
           error: data?.message || "OTP verification failed",
@@ -397,7 +611,7 @@ export const apiClient = {
       return {
         success: true,
         message: data?.message,
-        data: data?.data,
+        data: data.data,
       };
     } catch (error) {
       console.error("Verify OTP error:", error);
@@ -410,17 +624,10 @@ export const apiClient = {
 
   async resendOtp(payload: ResendOtpPayload): Promise<AuthResponse> {
     try {
-      const response = await fetch(`${API_URL}/auth/login/resend-otp`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await api.post("/auth/login/resend-otp", payload);
+      const data = response.data;
 
-      const data = await parseJsonResponse(response);
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
           error: data?.message || "Failed to resend OTP",
@@ -430,7 +637,7 @@ export const apiClient = {
       return {
         success: true,
         message: data?.message,
-        data: data?.data,
+        data: toAuthResponseData(data?.data ?? data),
       };
     } catch (error) {
       console.error("Resend OTP error:", error);
@@ -443,27 +650,20 @@ export const apiClient = {
 
   async register(payload: RegisterPayload): Promise<AuthResponse> {
     try {
-      const response = await fetch(`${API_URL}/auth/register`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await api.post("/auth/register", payload);
+      const data = response.data;
 
-      const data = await response.json();
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
-          error: data.message || "Registration failed",
+          error: data?.message || "Registration failed",
         };
       }
 
       return {
         success: true,
         message: data?.message,
-        data: data.data,
+        data: toAuthResponseData(data?.data ?? data),
       };
     } catch (error) {
       console.error("Register error:", error);
@@ -476,17 +676,10 @@ export const apiClient = {
 
   async verifyEmail(payload: VerifyEmailPayload): Promise<VerifyEmailResponse> {
     try {
-      const response = await fetch(`${API_URL}/auth/verify-email`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await api.post("/auth/verify-email", payload);
+      const data = response.data;
 
-      const data = await parseJsonResponse(response);
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
           error: data?.message || "Email verification failed",
@@ -511,20 +704,13 @@ export const apiClient = {
     payload: ResendVerificationEmailPayload,
   ): Promise<ResendVerificationEmailResponse> {
     try {
-      const response = await fetch(
-        `${API_URL}/auth/resend-verification-email`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        },
+      const response = await api.post(
+        "/auth/resend-verification-email",
+        payload,
       );
+      const data = response.data;
 
-      const data = await parseJsonResponse(response);
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
           error: data?.message || "Failed to resend verification email",
@@ -547,18 +733,21 @@ export const apiClient = {
 
   async getWalletBalance(): Promise<WalletBalanceResponse> {
     try {
-      const response = await fetch(`${API_URL}/wallet/balance`, {
+      const response = await requestWithAuth({
+        url: "/wallet/balance",
         method: "GET",
-        headers: getAuthHeaders(),
       });
 
-      const data = await parseJsonResponse(response);
+      const data = response.data;
       const balance = extractBalance(data);
 
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
-          error: data?.message || "Failed to fetch wallet balance",
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) || "Failed to fetch wallet balance",
         };
       }
 
@@ -571,7 +760,7 @@ export const apiClient = {
 
       return {
         success: true,
-        message: data?.message,
+        message: getResponseMessage(data),
         data: { balance },
       };
     } catch (error) {
@@ -587,25 +776,28 @@ export const apiClient = {
     payload: CreditWalletPayload,
   ): Promise<CreditWalletResponse> {
     try {
-      const response = await fetch(`${API_URL}/wallet/credit`, {
+      const response = await requestWithAuth({
+        url: "/wallet/credit",
         method: "POST",
-        headers: getAuthHeaders(),
-        body: JSON.stringify(payload),
+        data: payload,
       });
 
-      const data = await parseJsonResponse(response);
+      const data = response.data;
       const balance = extractBalance(data);
 
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
-          error: data?.message || "Failed to credit wallet",
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) || "Failed to credit wallet",
         };
       }
 
       return {
         success: true,
-        message: data?.message,
+        message: getResponseMessage(data),
         data: {
           balance,
           amount: payload.amount,
@@ -624,18 +816,22 @@ export const apiClient = {
 
   async buyAirtime(payload: BuyAirtimePayload): Promise<BuyAirtimeResponse> {
     try {
-      const response = await fetch("/api/bills/airtime", {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: JSON.stringify(payload),
+      const response = await axios.post("/api/bills/airtime", payload, {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        validateStatus: () => true,
+        withCredentials: true,
       });
+      const data = response.data;
 
-      const data = await parseJsonResponse(response);
-
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
-          error: data?.message || data?.error || "Failed to buy airtime",
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : data?.message || data?.error || "Failed to buy airtime",
         };
       }
 
@@ -663,15 +859,12 @@ export const apiClient = {
         page: String(page),
         limit: String(limit),
       });
-      const response = await fetch(
-        `${API_URL}/transactions/me?${searchParams.toString()}`,
-        {
-          method: "GET",
-          headers: getAuthHeaders(),
-        },
-      );
+      const response = await requestWithAuth({
+        url: `/transactions/me?${searchParams.toString()}`,
+        method: "GET",
+      });
 
-      const data = await parseJsonResponse(response);
+      const data = response.data;
       const transactions = extractTransactions(data);
       const meta = extractPaginationMeta(data, {
         page,
@@ -680,16 +873,19 @@ export const apiClient = {
         totalPages: Math.max(1, Math.ceil(transactions.length / limit)),
       });
 
-      if (!response.ok) {
+      if (!isSuccessStatus(response.status)) {
         return {
           success: false,
-          error: data?.message || "Failed to fetch transactions",
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) || "Failed to fetch transactions",
         };
       }
 
       return {
         success: true,
-        message: data?.message,
+        message: getResponseMessage(data),
         data: {
           transactions,
           meta,

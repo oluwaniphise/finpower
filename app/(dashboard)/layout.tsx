@@ -4,7 +4,7 @@ import { apiClient } from '@/lib/api-client'
 import { useAuthStore } from '@/stores/auth'
 import { useWalletStore } from '@/stores/wallet'
 import { useRouter } from 'next/navigation'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -43,8 +43,9 @@ interface DashboardLayoutProps {
 }
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
-  const { isAuthenticated, user, logout, hydrated } = useAuthStore()
+  const { user, logout, hydrated, setUser } = useAuthStore()
   const { setBalance, setTransactions } = useWalletStore()
+  const [sessionVerified, setSessionVerified] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
 
@@ -53,13 +54,37 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
       return
     }
 
-    if (!isAuthenticated) {
+    let isActive = true
+
+    const verifySession = async () => {
+      setSessionVerified(false)
+
+      const response = await apiClient.getCurrentUser()
+
+      if (!isActive) {
+        return
+      }
+
+
+      if (response.success && response.data?.user) {
+        setUser(response.data?.user)
+        setSessionVerified(true)
+        return
+      }
+
+      logout()
       router.push('/login')
     }
-  }, [hydrated, isAuthenticated, router])
+
+    void verifySession()
+
+    return () => {
+      isActive = false
+    }
+  }, [hydrated, logout, router, setUser])
 
   useEffect(() => {
-    if (!hydrated || !isAuthenticated) {
+    if (!hydrated || !sessionVerified) {
       return
     }
 
@@ -68,6 +93,25 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         apiClient.getWalletBalance(),
         apiClient.getMyTransactions(),
       ])
+
+      const sessionExpired =
+        (!balanceResponse.success && balanceResponse.error === 'Session expired. Please sign in again.') ||
+        (!transactionsResponse.success && transactionsResponse.error === 'Session expired. Please sign in again.')
+
+      if (sessionExpired) {
+        const sessionResponse = await apiClient.getCurrentUser()
+
+        if (sessionResponse.success && sessionResponse.data?.user) {
+          setUser(sessionResponse.data.user)
+          setSessionVerified(true)
+          return
+        }
+
+        logout()
+        setSessionVerified(false)
+        router.push('/login')
+        return
+      }
 
       if (balanceResponse.success && typeof balanceResponse.data?.balance === 'number') {
         setBalance(balanceResponse.data.balance)
@@ -79,14 +123,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     }
 
     void syncDashboardData()
-  }, [hydrated, isAuthenticated, pathname, setBalance, setTransactions])
+  }, [hydrated, sessionVerified, logout, pathname, router, setBalance, setTransactions, setUser])
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await apiClient.logout()
+    setSessionVerified(false)
     logout()
     router.push('/')
   }
 
-  if (!hydrated || !isAuthenticated) {
+  if (!hydrated || !sessionVerified) {
     return null // or a loading spinner
   }
 
