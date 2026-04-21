@@ -3,6 +3,41 @@ import { NextRequest, NextResponse } from "next/server";
 const API_URL = process.env.NEXT_PUBLIC_API_SANDBOX_URL?.trim();
 const BOND_APP_ID = process.env.BOND_APP_ID?.trim();
 const BOND_APP_SECRET = process.env.BOND_APP_SECRET?.trim();
+const ACCESS_COOKIE_NAME = "access_token";
+const REFRESH_COOKIE_NAME = "refresh_token";
+const ACCESS_TOKEN_MAX_AGE_SECONDS = 80 * 60;
+const REFRESH_TOKEN_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+
+function getCookieValue(cookieHeader: string | null, name: string) {
+  for (const cookie of cookieHeader?.split(";") ?? []) {
+    const [rawName, ...rawValue] = cookie.trim().split("=");
+
+    if (rawName === name && rawValue.length > 0) {
+      return rawValue.join("=");
+    }
+  }
+
+  return undefined;
+}
+
+function extractToken(payload: unknown, tokenName: "accessToken" | "refreshToken") {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const responseData = payload as {
+    accessToken?: unknown;
+    refreshToken?: unknown;
+    data?: {
+      accessToken?: unknown;
+      refreshToken?: unknown;
+    };
+  };
+
+  const token = responseData.data?.[tokenName] ?? responseData[tokenName];
+
+  return typeof token === "string" && token.length > 0 ? token : undefined;
+}
 
 function getSetCookieHeaders(response: Response) {
   const headers = response.headers as Headers & {
@@ -86,22 +121,40 @@ export async function POST(request: NextRequest) {
   try {
     let response = await performAirtimeRequest(payload, cookieHeader);
     const responseSetCookies: string[] = [];
+    let refreshedAccessToken: string | undefined;
+    let refreshedRefreshToken: string | undefined;
 
     if (response.status === 401) {
+      const refreshToken = getCookieValue(cookieHeader, REFRESH_COOKIE_NAME);
       const refreshResponse = await fetch(`${API_URL}/auth/refresh`, {
         method: "POST",
         headers: {
+          "Content-Type": "application/json",
           ...(cookieHeader ? { Cookie: cookieHeader } : {}),
         },
+        body: JSON.stringify({ refreshToken }),
       });
 
       const refreshSetCookies = getSetCookieHeaders(refreshResponse);
       responseSetCookies.push(...refreshSetCookies);
+      const refreshData = await refreshResponse.json().catch(() => null);
+      const nextAccessToken = extractToken(refreshData, "accessToken");
+      const nextRefreshToken = extractToken(refreshData, "refreshToken");
+      refreshedAccessToken = nextAccessToken;
+      refreshedRefreshToken = nextRefreshToken;
 
       if (refreshResponse.ok) {
         const nextCookieHeader = mergeCookieHeaders(
           cookieHeader,
-          refreshSetCookies,
+          [
+            ...refreshSetCookies,
+            ...(nextAccessToken
+              ? [`${ACCESS_COOKIE_NAME}=${nextAccessToken}`]
+              : []),
+            ...(nextRefreshToken
+              ? [`${REFRESH_COOKIE_NAME}=${nextRefreshToken}`]
+              : []),
+          ],
         );
         response = await performAirtimeRequest(payload, nextCookieHeader);
       }
@@ -119,6 +172,30 @@ export async function POST(request: NextRequest) {
 
     for (const setCookie of responseSetCookies) {
       nextResponse.headers.append("set-cookie", setCookie);
+    }
+
+    if (refreshedAccessToken) {
+      nextResponse.cookies.set({
+        name: ACCESS_COOKIE_NAME,
+        value: refreshedAccessToken,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/api/v1",
+        maxAge: ACCESS_TOKEN_MAX_AGE_SECONDS,
+      });
+    }
+
+    if (refreshedRefreshToken) {
+      nextResponse.cookies.set({
+        name: REFRESH_COOKIE_NAME,
+        value: refreshedRefreshToken,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: REFRESH_TOKEN_MAX_AGE_SECONDS,
+      });
     }
 
     return nextResponse;

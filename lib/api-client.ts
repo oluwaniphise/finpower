@@ -115,6 +115,51 @@ export interface BuyAirtimeResponse {
   error?: string;
 }
 
+export interface BillServiceProvider {
+  id: number;
+  name: string;
+  code: string;
+  displayImage: string;
+  new: boolean;
+  skipValidation: boolean;
+}
+
+export interface BillServiceItem {
+  id: number;
+  name: string;
+  code: string;
+  amount: number;
+  minAmount: number;
+  maxAmount: number;
+  isFixedAmount: boolean;
+  new: boolean;
+  duration: number;
+}
+
+export interface BillServiceProvidersResponse {
+  success: boolean;
+  message?: string;
+  data?: BillServiceProviderResponse;
+  error?: string;
+}
+
+export interface BillServiceItemsResponse {
+  success: boolean;
+  message?: string;
+  data?: BillServiceItemsProvidersResponse;
+  error?: string;
+}
+
+export interface BillServiceItemsProvidersResponse {
+  productID: string;
+  productItems: BillServiceItem[];
+}
+
+export interface BillServiceProviderResponse {
+  serviceCode: string;
+  products?: BillServiceProvider[];
+}
+
 export interface TransactionsResponse {
   success: boolean;
   message?: string;
@@ -247,11 +292,12 @@ async function refreshSession() {
   if (!refreshSessionPromise) {
     refreshSessionPromise = (async () => {
       try {
-        const response = await api.post("/auth/refresh");
+        const response = await axios.post("/api/auth/refresh", undefined, {
+          validateStatus: () => true,
+        });
 
         return isSuccessStatus(response.status);
       } catch (error) {
-        console.error("Refresh session error:", error);
         return false;
       } finally {
         refreshSessionPromise = null;
@@ -479,10 +525,162 @@ function extractPaginationMeta(
   };
 }
 
+function getPayloadArray(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const responseData = payload as {
+    data?: unknown;
+    items?: unknown;
+    results?: unknown;
+  };
+
+  if (Array.isArray(responseData.data)) {
+    return responseData.data;
+  }
+
+  if (responseData.data && typeof responseData.data === "object") {
+    const nestedData = responseData.data as {
+      items?: unknown;
+      results?: unknown;
+      services?: unknown;
+    };
+
+    if (Array.isArray(nestedData.items)) {
+      return nestedData.items;
+    }
+
+    if (Array.isArray(nestedData.results)) {
+      return nestedData.results;
+    }
+
+    if (Array.isArray(nestedData.services)) {
+      return nestedData.services;
+    }
+  }
+
+  if (Array.isArray(responseData.items)) {
+    return responseData.items;
+  }
+
+  if (Array.isArray(responseData.results)) {
+    return responseData.results;
+  }
+
+  return [];
+}
+
+function extractBillServiceProviders(
+  payload: unknown,
+  serviceCode: string,
+): unknown[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const item = payload as BillServiceProviderResponse & {
+    data?: unknown;
+  };
+  const normalizedServiceCode = serviceCode.toLowerCase();
+  const directProviders = item[normalizedServiceCode as keyof typeof item];
+
+  if (Array.isArray(directProviders)) {
+    return directProviders;
+  }
+
+  if (item.data && typeof item.data === "object") {
+    const nestedData = item.data as Record<string, unknown>;
+    const nestedProviders = nestedData[normalizedServiceCode];
+
+    if (Array.isArray(nestedProviders)) {
+      return nestedProviders;
+    }
+  }
+
+  return getPayloadArray(payload);
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function toBillServiceProvider(payload: unknown): BillServiceProvider | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const item = payload as Record<string, unknown>;
+  const id = toNumber(item.id, Number.NaN);
+  const name = typeof item.name === "string" ? item.name : undefined;
+  const code = typeof item.code === "string" ? item.code : undefined;
+
+  if (!Number.isFinite(id) || !name || !code) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    code,
+    displayImage:
+      typeof item.displayImage === "string" ? item.displayImage : "",
+    new: typeof item.new === "boolean" ? item.new : false,
+    skipValidation:
+      typeof item.skipValidation === "boolean" ? item.skipValidation : false,
+  };
+}
+
+function toBillServiceItem(payload: unknown): BillServiceItem | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const item = payload as Record<string, unknown>;
+  const id = toNumber(item.id, Number.NaN);
+  const name = typeof item.name === "string" ? item.name : undefined;
+  const code = typeof item.code === "string" ? item.code : undefined;
+
+  if (!Number.isFinite(id) || !name || !code) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    code,
+    amount: toNumber(item.amount),
+    minAmount: toNumber(item.minAmount),
+    maxAmount: toNumber(item.maxAmount),
+    isFixedAmount:
+      typeof item.isFixedAmount === "boolean" ? item.isFixedAmount : false,
+    new: typeof item.new === "boolean" ? item.new : false,
+    duration: toNumber(item.duration),
+  };
+}
+
 export const apiClient = {
   async logout(): Promise<LogoutResponse> {
     try {
-      const response = await api.post("/auth/logout");
+      const response = await axios.post("/api/auth/logout", undefined, {
+        validateStatus: () => true,
+      });
       const data = response.data;
 
       if (!isSuccessStatus(response.status)) {
@@ -598,7 +796,9 @@ export const apiClient = {
 
   async verifyOtp(payload: VerifyOtpPayload): Promise<AuthResponse> {
     try {
-      const response = await api.post("/auth/login/verify-otp", payload);
+      const response = await axios.post("/api/auth/login/verify-otp", payload, {
+        validateStatus: () => true,
+      });
       const data = response.data;
 
       if (!isSuccessStatus(response.status)) {
@@ -816,12 +1016,90 @@ export const apiClient = {
 
   async buyAirtime(payload: BuyAirtimePayload): Promise<BuyAirtimeResponse> {
     try {
-      const response = await axios.post("/api/bills/airtime", payload, {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        validateStatus: () => true,
-        withCredentials: true,
+      const response = await requestWithAuth({
+        url: "/bills/airtime",
+        method: "POST",
+        data: payload,
+      });
+      const data = response.data;
+      const responseError =
+        data && typeof data === "object" && "error" in data
+          ? data.error
+          : undefined;
+
+      if (!isSuccessStatus(response.status)) {
+        return {
+          success: false,
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) ||
+                (typeof responseError === "string"
+                  ? responseError
+                  : undefined) ||
+                "Failed to buy airtime",
+        };
+      }
+
+      return {
+        success: true,
+        message: getResponseMessage(data),
+        data:
+          data && typeof data === "object" && "data" in data
+            ? (data.data as Record<string, unknown>)
+            : (data as Record<string, unknown>),
+      };
+    } catch (error) {
+      console.error("Buy airtime error:", error);
+      return {
+        success: false,
+        error: "An error occurred while buying airtime",
+      };
+    }
+  },
+
+  async getBillServiceProviders(
+    serviceCode: string,
+  ): Promise<BillServiceProvidersResponse> {
+    try {
+      const response = await requestWithAuth({
+        url: `/bills/services/${encodeURIComponent(serviceCode)}/items`,
+        method: "GET",
+      });
+      const data = response.data;
+      console.log(data);
+
+      if (!isSuccessStatus(response.status)) {
+        return {
+          success: false,
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) || "Failed to fetch bill services",
+        };
+      }
+
+      return {
+        success: true,
+        message: getResponseMessage(data),
+        data: data?.data,
+      };
+    } catch (error) {
+      console.error("Get bill service providers error:", error);
+      return {
+        success: false,
+        error: "An error occurred while fetching bill services",
+      };
+    }
+  },
+
+  async getBillServiceItems(
+    serviceId: number,
+  ): Promise<BillServiceItemsResponse> {
+    try {
+      const response = await requestWithAuth({
+        url: `/bills/services/items/${serviceId}`,
+        method: "GET",
       });
       const data = response.data;
 
@@ -831,20 +1109,21 @@ export const apiClient = {
           error:
             response.status === 401
               ? "Session expired. Please sign in again."
-              : data?.message || data?.error || "Failed to buy airtime",
+              : getResponseMessage(data) ||
+                "Failed to fetch bill service items",
         };
       }
 
       return {
         success: true,
-        message: data?.message,
-        data: data?.data ?? data,
+        message: getResponseMessage(data),
+        data: data?.data
       };
     } catch (error) {
-      console.error("Buy airtime error:", error);
+      console.error("Get bill service items error:", error);
       return {
         success: false,
-        error: "An error occurred while buying airtime",
+        error: "An error occurred while fetching bill service items",
       };
     }
   },
