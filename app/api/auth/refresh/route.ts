@@ -13,14 +13,24 @@ function extractToken(payload: unknown, tokenName: "accessToken" | "refreshToken
 
   const responseData = payload as {
     accessToken?: unknown;
+    access_token?: unknown;
     refreshToken?: unknown;
+    refresh_token?: unknown;
     data?: {
       accessToken?: unknown;
+      access_token?: unknown;
       refreshToken?: unknown;
+      refresh_token?: unknown;
     };
   };
 
-  const token = responseData.data?.[tokenName] ?? responseData[tokenName];
+  const snakeCaseTokenName =
+    tokenName === "accessToken" ? "access_token" : "refresh_token";
+  const token =
+    responseData.data?.[tokenName] ??
+    responseData.data?.[snakeCaseTokenName] ??
+    responseData[tokenName] ??
+    responseData[snakeCaseTokenName];
 
   return typeof token === "string" && token.length > 0 ? token : undefined;
 }
@@ -32,29 +42,79 @@ function removeTokens(payload: unknown) {
 
   const responseData = payload as {
     accessToken?: unknown;
+    access_token?: unknown;
     refreshToken?: unknown;
+    refresh_token?: unknown;
     data?: Record<string, unknown>;
   };
 
   if (!responseData.data || typeof responseData.data !== "object") {
     const rest = { ...responseData };
     delete rest.accessToken;
+    delete rest.access_token;
     delete rest.refreshToken;
+    delete rest.refresh_token;
 
     return rest;
   }
 
   const data = { ...responseData.data };
   delete data.accessToken;
+  delete data.access_token;
   delete data.refreshToken;
+  delete data.refresh_token;
   const rest = { ...responseData };
   delete rest.accessToken;
+  delete rest.access_token;
   delete rest.refreshToken;
+  delete rest.refresh_token;
 
   return {
     ...rest,
     data,
   };
+}
+
+function getObjectKeys(value: unknown) {
+  return value && typeof value === "object" ? Object.keys(value) : [];
+}
+
+function getDebugToken(value: string | undefined) {
+  return value
+    ? { present: true, length: value.length, prefix: value.slice(0, 8) }
+    : { present: false };
+}
+
+function getSetCookieHeaders(response: Response) {
+  const headers = response.headers as Headers & {
+    getSetCookie?: () => string[];
+  };
+
+  if (typeof headers.getSetCookie === "function") {
+    return headers.getSetCookie();
+  }
+
+  const setCookie = response.headers.get("set-cookie");
+  return setCookie ? [setCookie] : [];
+}
+
+function getSetCookieNames(setCookieHeaders: string[]) {
+  return setCookieHeaders
+    .map((setCookie) => setCookie.split(";")[0]?.split("=")[0]?.trim())
+    .filter(Boolean);
+}
+
+function getTokenFromSetCookie(setCookieHeaders: string[], name: string) {
+  for (const setCookie of setCookieHeaders) {
+    const [cookiePair] = setCookie.split(";");
+    const [rawName, ...rawValue] = cookiePair.trim().split("=");
+
+    if (rawName === name && rawValue.length > 0) {
+      return rawValue.join("=");
+    }
+  }
+
+  return undefined;
 }
 
 function setAuthCookies(
@@ -97,6 +157,11 @@ export async function POST(request: NextRequest) {
 
   const refreshToken = request.cookies.get(REFRESH_COOKIE_NAME)?.value;
 
+  console.log("[auth refresh] incoming cookie", {
+    hasRefreshCookie: Boolean(refreshToken),
+    refreshToken: getDebugToken(refreshToken),
+  });
+
   if (!refreshToken) {
     return NextResponse.json(
       { message: "Refresh token missing" },
@@ -108,12 +173,35 @@ export async function POST(request: NextRequest) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Cookie: `${REFRESH_COOKIE_NAME}=${refreshToken}`,
     },
-    body: JSON.stringify({ refreshToken }),
+    body: JSON.stringify({
+      refreshToken,
+      refresh_token: refreshToken,
+    }),
   });
   const data = await upstreamResponse.json().catch(() => null);
-  const nextAccessToken = extractToken(data, "accessToken");
-  const nextRefreshToken = extractToken(data, "refreshToken");
+  const setCookieHeaders = getSetCookieHeaders(upstreamResponse);
+  const nextAccessToken =
+    extractToken(data, "accessToken") ??
+    getTokenFromSetCookie(setCookieHeaders, ACCESS_COOKIE_NAME);
+  const nextRefreshToken =
+    extractToken(data, "refreshToken") ??
+    getTokenFromSetCookie(setCookieHeaders, REFRESH_COOKIE_NAME);
+
+  console.log("[auth refresh] upstream result", {
+    status: upstreamResponse.status,
+    topLevelKeys: getObjectKeys(data),
+    dataKeys:
+      data && typeof data === "object" && "data" in data
+        ? getObjectKeys(data.data)
+        : [],
+    nextAccessToken: getDebugToken(nextAccessToken),
+    nextRefreshToken: getDebugToken(nextRefreshToken),
+    upstreamSetCookieNames: getSetCookieNames(setCookieHeaders),
+    willSetAccessCookie: upstreamResponse.ok && Boolean(nextAccessToken),
+    willSetRefreshCookie: upstreamResponse.ok && Boolean(nextRefreshToken),
+  });
 
   const response = NextResponse.json(
     removeTokens(

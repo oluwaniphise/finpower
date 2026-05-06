@@ -24,10 +24,38 @@ const currencyFormatter = new Intl.NumberFormat('en-NG', {
   currency: 'NGN',
 })
 
+function normalizeNigerianPhoneNumber(value: string) {
+  const digits = value.replace(/\D/g, '')
+
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return `+234${digits.slice(1)}`
+  }
+
+  if (digits.length === 10) {
+    return `+234${digits}`
+  }
+
+  if (digits.length === 13 && digits.startsWith('234')) {
+    return `+${digits}`
+  }
+
+  return null
+}
+
+function formatPhoneNumberForDisplay(value: string) {
+  const digits = value.replace(/\D/g, '')
+
+  if (digits.length === 13 && digits.startsWith('234')) {
+    return `0${digits.slice(3)}`
+  }
+
+  return digits.slice(0, 11)
+}
+
 export default function BuyAirtime() {
   const user = useAuthStore((state) => state.user)
   const [formData, setFormData] = useState({
-    phoneNumber: user?.phoneNumber || user?.phone || '',
+    phoneNumber: formatPhoneNumberForDisplay(user?.phoneNumber || user?.phone || ''),
     network: '',
     amount: '',
   })
@@ -54,7 +82,8 @@ export default function BuyAirtime() {
       return
     }
 
-    if (!formData.phoneNumber || formData.phoneNumber.length < 11) {
+    const normalizedPhoneNumber = normalizeNigerianPhoneNumber(formData.phoneNumber)
+    if (!normalizedPhoneNumber) {
       setError('Please enter a valid phone number')
       return
     }
@@ -76,7 +105,7 @@ export default function BuyAirtime() {
       productItemCode: selectedNetwork.productItemCode,
       customerVendId: formData.phoneNumber,
       customerEmail: user.email,
-      customerPhoneNumber: formData.phoneNumber,
+      customerPhoneNumber: normalizedPhoneNumber,
       amount: numAmount,
     })
 
@@ -103,9 +132,14 @@ export default function BuyAirtime() {
   }
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value =
+      e.target.name === 'phoneNumber'
+        ? formatPhoneNumberForDisplay(e.target.value)
+        : e.target.value
+
     setFormData((prev) => ({
       ...prev,
-      [e.target.name]: e.target.value,
+      [e.target.name]: value,
     }))
   }
 

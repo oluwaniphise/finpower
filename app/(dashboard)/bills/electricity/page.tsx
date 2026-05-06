@@ -6,6 +6,7 @@ import {
   apiClient,
   type BillServiceItem,
   type BillServiceProvider,
+  type ElectricityValidationData,
 } from "@/lib/api-client";
 import { useWalletStore } from "@/stores/wallet";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,8 @@ export default function PayElectricity() {
   const [isSuccess, setIsSuccess] = useState(false);
   const [error, setError] = useState("");
   const [isVerified, setIsVerified] = useState(false);
+  const [validationData, setValidationData] =
+    useState<ElectricityValidationData | null>(null);
 
   const { balance, updateBalance, addTransaction } = useWalletStore();
   const router = useRouter();
@@ -55,6 +58,18 @@ export default function PayElectricity() {
   const selectedServiceItem = serviceItems.find(
     (item) => item.code === formData.productItemCode,
   );
+  const validationMinimumAmount =
+    validationData?.electricityData.minimumAmount ?? 0;
+  const validationMaximumAmount =
+    validationData?.electricityData.maximumAmount ?? 0;
+  const effectiveMinimumAmount =
+    validationMinimumAmount > 0
+      ? validationMinimumAmount
+      : selectedServiceItem?.minAmount || 0;
+  const effectiveMaximumAmount =
+    validationMaximumAmount > 0
+      ? validationMaximumAmount
+      : selectedServiceItem?.maxAmount || 0;
 
   useEffect(() => {
     let isActive = true;
@@ -91,6 +106,7 @@ export default function PayElectricity() {
     setError("");
     setServiceItems([]);
     setIsVerified(false);
+    setValidationData(null);
     setFormData((prev) => ({
       ...prev,
       disco: String(disco.id),
@@ -116,6 +132,7 @@ export default function PayElectricity() {
 
   const selectServiceItem = (item: BillServiceItem) => {
     setIsVerified(false);
+    setValidationData(null);
     setFormData((prev) => ({
       ...prev,
       productItemCode: item.code,
@@ -136,16 +153,39 @@ export default function PayElectricity() {
     setIsVerifying(true);
     setError("");
 
-    // Meter validation endpoint is not available yet, so this keeps the existing mock behavior.
-    setTimeout(() => {
-      setFormData((prev) => ({
-        ...prev,
-        customerName: "John Doe",
-        address: "123 Example Street, Lagos",
-      }));
-      setIsVerified(true);
-      setIsVerifying(false);
-    }, 2000);
+    const response = await apiClient.validateElectricity({
+      productCode: selectedDisco.code,
+      productItemCode: selectedServiceItem.code,
+      customerVendId: formData.meterNumber,
+    });
+
+    setIsVerifying(false);
+
+    if (!response.success || !response.data) {
+      setIsVerified(false);
+      setValidationData(null);
+      setError(response.error || "Unable to validate meter number");
+      return;
+    }
+
+    const electricityData = response.data.electricityData;
+    const customerData = electricityData.CustomerData;
+
+    if (!customerData.canVend) {
+      setIsVerified(false);
+      setValidationData(response.data);
+      setError("This meter cannot vend at the moment");
+      return;
+    }
+
+    setValidationData(response.data);
+    setFormData((prev) => ({
+      ...prev,
+      customerName:
+        customerData.customerName || electricityData.customerName || "Unknown",
+      address: customerData.address || "Not available",
+    }));
+    setIsVerified(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -163,22 +203,16 @@ export default function PayElectricity() {
       return;
     }
 
-    if (
-      selectedServiceItem.minAmount > 0 &&
-      numAmount < selectedServiceItem.minAmount
-    ) {
+    if (effectiveMinimumAmount > 0 && numAmount < effectiveMinimumAmount) {
       setError(
-        `Minimum amount is ${currencyFormatter.format(selectedServiceItem.minAmount)}`,
+        `Minimum amount is ${currencyFormatter.format(effectiveMinimumAmount)}`,
       );
       return;
     }
 
-    if (
-      selectedServiceItem.maxAmount > 0 &&
-      numAmount > selectedServiceItem.maxAmount
-    ) {
+    if (effectiveMaximumAmount > 0 && numAmount > effectiveMaximumAmount) {
       setError(
-        `Maximum amount is ${currencyFormatter.format(selectedServiceItem.maxAmount)}`,
+        `Maximum amount is ${currencyFormatter.format(effectiveMaximumAmount)}`,
       );
       return;
     }
@@ -217,6 +251,7 @@ export default function PayElectricity() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.name === "meterNumber") {
       setIsVerified(false);
+      setValidationData(null);
     }
 
     setFormData((prev) => ({
@@ -391,6 +426,21 @@ export default function PayElectricity() {
                     <span className="font-medium">Address:</span>{" "}
                     {formData.address}
                   </div>
+                  {validationData && (
+                    <>
+                      <div>
+                        <span className="font-medium">Reference:</span>{" "}
+                        {validationData.reference}
+                      </div>
+                      <div>
+                        <span className="font-medium">Arrears Balance:</span>{" "}
+                        {currencyFormatter.format(
+                          validationData.electricityData.CustomerData
+                            .arrearsBalance,
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -409,16 +459,18 @@ export default function PayElectricity() {
                   value={formData.amount}
                   onChange={handleChange}
                   className="pl-8"
-                  min={selectedServiceItem?.minAmount || 1}
-                  max={selectedServiceItem?.maxAmount || undefined}
+                  min={effectiveMinimumAmount || 1}
+                  max={effectiveMaximumAmount || undefined}
                   readOnly={selectedServiceItem?.isFixedAmount}
                 />
               </div>
               {selectedServiceItem && !selectedServiceItem.isFixedAmount && (
                 <p className="text-sm text-gray-500">
                   Allowed amount:{" "}
-                  {currencyFormatter.format(selectedServiceItem.minAmount)} to{" "}
-                  {currencyFormatter.format(selectedServiceItem.maxAmount)}
+                  {currencyFormatter.format(effectiveMinimumAmount)} to{" "}
+                  {effectiveMaximumAmount > 0
+                    ? currencyFormatter.format(effectiveMaximumAmount)
+                    : "No maximum"}
                 </p>
               )}
             </div>

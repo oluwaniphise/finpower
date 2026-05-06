@@ -115,6 +115,38 @@ export interface BuyAirtimeResponse {
   error?: string;
 }
 
+export interface ValidateElectricityPayload {
+  productCode: string;
+  productItemCode: string;
+  customerVendId: string;
+}
+
+export interface ElectricityCustomerData {
+  customerName: string;
+  address: string | null;
+  canVend: boolean;
+  arrearsBalance: number;
+}
+
+export interface ElectricityValidationData {
+  reference: string;
+  providerReference: string;
+  electricityData: {
+    reference: string;
+    customerName: string;
+    minimumAmount: number;
+    maximumAmount: number;
+    CustomerData: ElectricityCustomerData;
+  };
+}
+
+export interface ValidateElectricityResponse {
+  success: boolean;
+  message?: string;
+  data?: ElectricityValidationData;
+  error?: string;
+}
+
 export interface BillServiceProvider {
   id: number;
   name: string;
@@ -193,6 +225,14 @@ const api = axios.create({
 
 function isSuccessStatus(status: number) {
   return status >= 200 && status < 300;
+}
+
+function createIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `airtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function getResponseMessage(payload: unknown): string | undefined {
@@ -296,8 +336,14 @@ async function refreshSession() {
           validateStatus: () => true,
         });
 
+        console.log("[api-client refresh]", {
+          status: response.status,
+          data: response.data,
+        });
+
         return isSuccessStatus(response.status);
       } catch (error) {
+        console.log("[api-client refresh] error", error);
         return false;
       } finally {
         refreshSessionPromise = null;
@@ -522,156 +568,6 @@ function extractPaginationMeta(
     limit,
     total,
     totalPages,
-  };
-}
-
-function getPayloadArray(payload: unknown): unknown[] {
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-
-  if (!payload || typeof payload !== "object") {
-    return [];
-  }
-
-  const responseData = payload as {
-    data?: unknown;
-    items?: unknown;
-    results?: unknown;
-  };
-
-  if (Array.isArray(responseData.data)) {
-    return responseData.data;
-  }
-
-  if (responseData.data && typeof responseData.data === "object") {
-    const nestedData = responseData.data as {
-      items?: unknown;
-      results?: unknown;
-      services?: unknown;
-    };
-
-    if (Array.isArray(nestedData.items)) {
-      return nestedData.items;
-    }
-
-    if (Array.isArray(nestedData.results)) {
-      return nestedData.results;
-    }
-
-    if (Array.isArray(nestedData.services)) {
-      return nestedData.services;
-    }
-  }
-
-  if (Array.isArray(responseData.items)) {
-    return responseData.items;
-  }
-
-  if (Array.isArray(responseData.results)) {
-    return responseData.results;
-  }
-
-  return [];
-}
-
-function extractBillServiceProviders(
-  payload: unknown,
-  serviceCode: string,
-): unknown[] {
-  if (!payload || typeof payload !== "object") {
-    return [];
-  }
-
-  const item = payload as BillServiceProviderResponse & {
-    data?: unknown;
-  };
-  const normalizedServiceCode = serviceCode.toLowerCase();
-  const directProviders = item[normalizedServiceCode as keyof typeof item];
-
-  if (Array.isArray(directProviders)) {
-    return directProviders;
-  }
-
-  if (item.data && typeof item.data === "object") {
-    const nestedData = item.data as Record<string, unknown>;
-    const nestedProviders = nestedData[normalizedServiceCode];
-
-    if (Array.isArray(nestedProviders)) {
-      return nestedProviders;
-    }
-  }
-
-  return getPayloadArray(payload);
-}
-
-function toNumber(value: unknown, fallback = 0): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number(value);
-
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return fallback;
-}
-
-function toBillServiceProvider(payload: unknown): BillServiceProvider | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const item = payload as Record<string, unknown>;
-  const id = toNumber(item.id, Number.NaN);
-  const name = typeof item.name === "string" ? item.name : undefined;
-  const code = typeof item.code === "string" ? item.code : undefined;
-
-  if (!Number.isFinite(id) || !name || !code) {
-    return null;
-  }
-
-  return {
-    id,
-    name,
-    code,
-    displayImage:
-      typeof item.displayImage === "string" ? item.displayImage : "",
-    new: typeof item.new === "boolean" ? item.new : false,
-    skipValidation:
-      typeof item.skipValidation === "boolean" ? item.skipValidation : false,
-  };
-}
-
-function toBillServiceItem(payload: unknown): BillServiceItem | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const item = payload as Record<string, unknown>;
-  const id = toNumber(item.id, Number.NaN);
-  const name = typeof item.name === "string" ? item.name : undefined;
-  const code = typeof item.code === "string" ? item.code : undefined;
-
-  if (!Number.isFinite(id) || !name || !code) {
-    return null;
-  }
-
-  return {
-    id,
-    name,
-    code,
-    amount: toNumber(item.amount),
-    minAmount: toNumber(item.minAmount),
-    maxAmount: toNumber(item.maxAmount),
-    isFixedAmount:
-      typeof item.isFixedAmount === "boolean" ? item.isFixedAmount : false,
-    new: typeof item.new === "boolean" ? item.new : false,
-    duration: toNumber(item.duration),
   };
 }
 
@@ -1016,12 +912,21 @@ export const apiClient = {
 
   async buyAirtime(payload: BuyAirtimePayload): Promise<BuyAirtimeResponse> {
     try {
-      const response = await requestWithAuth({
-        url: "/bills/airtime",
-        method: "POST",
-        data: payload,
+      const idempotencyKey = createIdempotencyKey();
+      const response = await axios.post("/api/bills/airtime", payload, {
+        headers: {
+          "Idempotency-Key": idempotencyKey,
+        },
+        validateStatus: () => true,
       });
       const data = response.data;
+
+      console.log("[api-client buyAirtime]", {
+        status: response.status,
+        idempotencyKey,
+        data,
+      });
+
       const responseError =
         data && typeof data === "object" && "error" in data
           ? data.error
@@ -1058,6 +963,60 @@ export const apiClient = {
     }
   },
 
+  async validateElectricity(
+    payload: ValidateElectricityPayload,
+  ): Promise<ValidateElectricityResponse> {
+    try {
+      const response = await requestWithAuth({
+        url: "/bills/electricity/validate",
+        method: "POST",
+        data: payload,
+      });
+      const data = response.data;
+      const responseError =
+        data && typeof data === "object" && "error" in data
+          ? data.error
+          : undefined;
+      const validationData =
+        data && typeof data === "object" && "data" in data
+          ? (data.data as ElectricityValidationData | undefined)
+          : (data as ElectricityValidationData | undefined);
+
+      if (!isSuccessStatus(response.status)) {
+        return {
+          success: false,
+          error:
+            response.status === 401
+              ? "Session expired. Please sign in again."
+              : getResponseMessage(data) ||
+                (typeof responseError === "string"
+                  ? responseError
+                  : undefined) ||
+                "Failed to validate meter number",
+        };
+      }
+
+      if (!validationData?.electricityData) {
+        return {
+          success: false,
+          error: "Meter validation data was not returned by the server",
+        };
+      }
+
+      return {
+        success: true,
+        message: getResponseMessage(data),
+        data: validationData,
+      };
+    } catch (error) {
+      console.error("Validate electricity error:", error);
+      return {
+        success: false,
+        error: "An error occurred while validating meter number",
+      };
+    }
+  },
+
   async getBillServiceProviders(
     serviceCode: string,
   ): Promise<BillServiceProvidersResponse> {
@@ -1067,7 +1026,6 @@ export const apiClient = {
         method: "GET",
       });
       const data = response.data;
-      console.log(data);
 
       if (!isSuccessStatus(response.status)) {
         return {
@@ -1082,7 +1040,10 @@ export const apiClient = {
       return {
         success: true,
         message: getResponseMessage(data),
-        data: data?.data,
+        data:
+          data && typeof data === "object" && "data" in data
+            ? (data.data as BillServiceProviderResponse | undefined)
+            : undefined,
       };
     } catch (error) {
       console.error("Get bill service providers error:", error);
@@ -1117,7 +1078,10 @@ export const apiClient = {
       return {
         success: true,
         message: getResponseMessage(data),
-        data: data?.data
+        data:
+          data && typeof data === "object" && "data" in data
+            ? (data.data as BillServiceItemsProvidersResponse | undefined)
+            : undefined,
       };
     } catch (error) {
       console.error("Get bill service items error:", error);

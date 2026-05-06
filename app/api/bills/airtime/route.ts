@@ -27,14 +27,24 @@ function extractToken(payload: unknown, tokenName: "accessToken" | "refreshToken
 
   const responseData = payload as {
     accessToken?: unknown;
+    access_token?: unknown;
     refreshToken?: unknown;
+    refresh_token?: unknown;
     data?: {
       accessToken?: unknown;
+      access_token?: unknown;
       refreshToken?: unknown;
+      refresh_token?: unknown;
     };
   };
 
-  const token = responseData.data?.[tokenName] ?? responseData[tokenName];
+  const snakeCaseTokenName =
+    tokenName === "accessToken" ? "access_token" : "refresh_token";
+  const token =
+    responseData.data?.[tokenName] ??
+    responseData.data?.[snakeCaseTokenName] ??
+    responseData[tokenName] ??
+    responseData[snakeCaseTokenName];
 
   return typeof token === "string" && token.length > 0 ? token : undefined;
 }
@@ -84,14 +94,34 @@ function mergeCookieHeaders(
     .join("; ");
 }
 
+function getObjectKeys(value: unknown) {
+  return value && typeof value === "object" ? Object.keys(value) : [];
+}
+
+function getDebugToken(value: string | undefined) {
+  return value
+    ? { present: true, length: value.length, prefix: value.slice(0, 8) }
+    : { present: false };
+}
+
+function createIdempotencyKey() {
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `airtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 async function performAirtimeRequest(
   payload: unknown,
   cookieHeader: string | null,
+  idempotencyKey: string,
 ) {
   return fetch(`${API_URL}/bills/airtime`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
       "app-id": BOND_APP_ID!,
       "app-secret": BOND_APP_SECRET!,
       ...(cookieHeader ? { Cookie: cookieHeader } : {}),
@@ -116,16 +146,29 @@ export async function POST(request: NextRequest) {
   }
 
   const cookieHeader = request.headers.get("cookie");
+  const idempotencyKey =
+    request.headers.get("idempotency-key") ?? createIdempotencyKey();
   const payload = await request.json();
 
   try {
-    let response = await performAirtimeRequest(payload, cookieHeader);
+    let response = await performAirtimeRequest(
+      payload,
+      cookieHeader,
+      idempotencyKey,
+    );
     const responseSetCookies: string[] = [];
     let refreshedAccessToken: string | undefined;
     let refreshedRefreshToken: string | undefined;
 
     if (response.status === 401) {
       const refreshToken = getCookieValue(cookieHeader, REFRESH_COOKIE_NAME);
+
+      console.log("[airtime refresh] incoming cookie", {
+        hasCookieHeader: Boolean(cookieHeader),
+        hasRefreshCookie: Boolean(refreshToken),
+        refreshToken: getDebugToken(refreshToken),
+      });
+
       const refreshResponse = await fetch(`${API_URL}/auth/refresh`, {
         method: "POST",
         headers: {
@@ -143,6 +186,19 @@ export async function POST(request: NextRequest) {
       refreshedAccessToken = nextAccessToken;
       refreshedRefreshToken = nextRefreshToken;
 
+      console.log("[airtime refresh] upstream result", {
+        status: refreshResponse.status,
+        topLevelKeys: getObjectKeys(refreshData),
+        dataKeys:
+          refreshData && typeof refreshData === "object" && "data" in refreshData
+            ? getObjectKeys(refreshData.data)
+            : [],
+        nextAccessToken: getDebugToken(nextAccessToken),
+        nextRefreshToken: getDebugToken(nextRefreshToken),
+        setCookieHeaders: refreshSetCookies.length,
+        willRetryAirtime: refreshResponse.ok,
+      });
+
       if (refreshResponse.ok) {
         const nextCookieHeader = mergeCookieHeaders(
           cookieHeader,
@@ -156,7 +212,11 @@ export async function POST(request: NextRequest) {
               : []),
           ],
         );
-        response = await performAirtimeRequest(payload, nextCookieHeader);
+        response = await performAirtimeRequest(
+          payload,
+          nextCookieHeader,
+          idempotencyKey,
+        );
       }
     }
 

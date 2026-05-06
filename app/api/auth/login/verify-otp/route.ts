@@ -13,18 +13,70 @@ function extractToken(payload: unknown, tokenName: "accessToken" | "refreshToken
 
   const responseData = payload as {
     accessToken?: unknown;
+    access_token?: unknown;
     refreshToken?: unknown;
+    refresh_token?: unknown;
     data?: {
       accessToken?: unknown;
+      access_token?: unknown;
       refreshToken?: unknown;
+      refresh_token?: unknown;
     };
   };
 
-  const token = responseData.data?.[tokenName] ?? responseData[tokenName];
+  const snakeCaseTokenName =
+    tokenName === "accessToken" ? "access_token" : "refresh_token";
+  const token =
+    responseData.data?.[tokenName] ??
+    responseData.data?.[snakeCaseTokenName] ??
+    responseData[tokenName] ??
+    responseData[snakeCaseTokenName];
 
   return typeof token === "string" && token.length > 0
     ? token
     : undefined;
+}
+
+function getObjectKeys(value: unknown) {
+  return value && typeof value === "object" ? Object.keys(value) : [];
+}
+
+function getDebugToken(value: string | undefined) {
+  return value
+    ? { present: true, length: value.length, prefix: value.slice(0, 8) }
+    : { present: false };
+}
+
+function getSetCookieHeaders(response: Response) {
+  const headers = response.headers as Headers & {
+    getSetCookie?: () => string[];
+  };
+
+  if (typeof headers.getSetCookie === "function") {
+    return headers.getSetCookie();
+  }
+
+  const setCookie = response.headers.get("set-cookie");
+  return setCookie ? [setCookie] : [];
+}
+
+function getSetCookieNames(setCookieHeaders: string[]) {
+  return setCookieHeaders
+    .map((setCookie) => setCookie.split(";")[0]?.split("=")[0]?.trim())
+    .filter(Boolean);
+}
+
+function getTokenFromSetCookie(setCookieHeaders: string[], name: string) {
+  for (const setCookie of setCookieHeaders) {
+    const [cookiePair] = setCookie.split(";");
+    const [rawName, ...rawValue] = cookiePair.trim().split("=");
+
+    if (rawName === name && rawValue.length > 0) {
+      return rawValue.join("=");
+    }
+  }
+
+  return undefined;
 }
 
 function removeTokens(payload: unknown) {
@@ -34,24 +86,32 @@ function removeTokens(payload: unknown) {
 
   const responseData = payload as {
     accessToken?: unknown;
+    access_token?: unknown;
     refreshToken?: unknown;
+    refresh_token?: unknown;
     data?: Record<string, unknown>;
   };
 
   if (!responseData.data || typeof responseData.data !== "object") {
     const rest = { ...responseData };
     delete rest.accessToken;
+    delete rest.access_token;
     delete rest.refreshToken;
+    delete rest.refresh_token;
 
     return rest;
   }
 
   const data = { ...responseData.data };
   delete data.accessToken;
+  delete data.access_token;
   delete data.refreshToken;
+  delete data.refresh_token;
   const rest = { ...responseData };
   delete rest.accessToken;
+  delete rest.access_token;
   delete rest.refreshToken;
+  delete rest.refresh_token;
 
   return {
     ...rest,
@@ -76,8 +136,27 @@ export async function POST(request: NextRequest) {
     body: JSON.stringify(payload),
   });
   const data = await upstreamResponse.json().catch(() => null);
-  const accessToken = extractToken(data, "accessToken");
-  const refreshToken = extractToken(data, "refreshToken");
+  const setCookieHeaders = getSetCookieHeaders(upstreamResponse);
+  const accessToken =
+    extractToken(data, "accessToken") ??
+    getTokenFromSetCookie(setCookieHeaders, ACCESS_COOKIE_NAME);
+  const refreshToken =
+    extractToken(data, "refreshToken") ??
+    getTokenFromSetCookie(setCookieHeaders, REFRESH_COOKIE_NAME);
+
+  console.log("[auth verify-otp]", {
+    status: upstreamResponse.status,
+    topLevelKeys: getObjectKeys(data),
+    dataKeys:
+      data && typeof data === "object" && "data" in data
+        ? getObjectKeys(data.data)
+        : [],
+    accessToken: getDebugToken(accessToken),
+    refreshToken: getDebugToken(refreshToken),
+    upstreamSetCookieNames: getSetCookieNames(setCookieHeaders),
+    willSetAccessCookie: upstreamResponse.ok && Boolean(accessToken),
+    willSetRefreshCookie: upstreamResponse.ok && Boolean(refreshToken),
+  });
 
   const response = NextResponse.json(removeTokens(data), {
     status: upstreamResponse.status,
